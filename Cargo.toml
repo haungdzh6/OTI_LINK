@@ -1,0 +1,19 @@
+[package]
+name = "oti_rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nusb = "0.2.7"
+crc32fast = "1"
+ctrlc = "3"
+arboard = "3.6.1"
+filetime = "0.2"
+notify = "8.2"
+
+winfsp = { version = "0.13.1", features = ["windows-61"] }
+winfsp-sys = "0.12.1"
+
+[build-dependencies]
+winfsp = "0.13.1"
+winres = "0.1.12"
