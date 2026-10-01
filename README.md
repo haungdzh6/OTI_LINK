@@ -1,208 +1,34 @@
+[**English**](README.md) | [简体中文](README-zh.md)
+
+---
+
 # OTI-Link
 
-OTI-Link is an open-source Windows application for high-speed PC-to-PC communication using OTi USB 3.x transfer cables.
-
-It communicates directly with the cable through its WinUSB interface and provides a modern replacement for the original Smart Data Link software, with remote filesystem access, Explorer integration, clipboard synchronization, keyboard/mouse sharing, background tray operation, and automatic reconnect handling.
+OTI-Link is an experimental open-source Windows project for high-speed PC-to-PC communication over OTi USB 3.x transfer cables. It provides remote file access, native Windows Explorer copy/paste, clipboard synchronization, keyboard/mouse sharing, cross-screen KVM, a virtual network adapter, WinNAT sharing, and Moonlight/VDD secondary-display workflow coordination.
 
 > This project is independently developed and is not affiliated with OTi, the cable manufacturer, or the original Smart Data Link software.
+
+## Current Version
+
+- Current development line: **OTI-Link 10.0-FIX15**
+- Current protocol version: **14**
+- Both computers must run the same FIX15 build.
+- The current branch is based on **FIX13 compilefix3 no-display**: OTI-Link's built-in `display.rs` / DXGI display-streaming implementation has been removed.
+- The current secondary-display solution uses **Sunshine + Moonlight + Virtual Display Driver (VDD)** for video. OTI-Link coordinates USB transport, files, KVM, clipboard, networking, and mode switching.
 
 ---
 
 ## Features
 
-### High-Speed PC-to-PC File Transfer
+### High-Speed USB Transport
 
-OTI-Link uses the USB 3.x transfer cable directly through WinUSB.
+OTI-Link communicates directly with the OTi USB 3.x transfer cable through WinUSB on interface MI_05.
 
-The current implementation uses separate USB lanes for data transfer and control traffic, allowing high-throughput file access while keeping metadata, clipboard, and KVM traffic responsive.
-
----
-
-### Remote Drives with WinFsp
-
-The remote computer is exposed as a Windows filesystem using WinFsp.
-
-Typical mounted structure:
-
-```text
-OTI-DESKTOP-XXXX (R:)
-├── Desktop
-├── Downloads
-├── Documents
-└── Drives
-    ├── C
-    ├── D
-    └── ...
-```
-
-Supported operations include:
-
-- File reading
-- File creation
-- File writing
-- File overwrite
-- File deletion
-- Directory creation
-- Directory deletion
-- Rename and move
-- File size changes
-- Basic metadata updates
-- Directory enumeration
-- Writable remote drives
-- Large sequential reads
-- Read-ahead caching
-
-Only local fixed drives are exported by default.
-
----
-
-### Windows Explorer Copy / Paste
-
-OTI-Link integrates with the Windows file clipboard.
-
-You can copy files or folders on one PC:
-
-```text
-Right-click → Copy
-```
-
-Then switch to the other PC:
-
-```text
-Right-click → Paste
-```
-
-The file list is synchronized through OTI-Link, while the actual file data is transferred through the mounted remote filesystem.
-
-Supported:
-
-- Multiple files
-- Multiple folders
-- Recursive folder copy
-- Files from exported fixed drives
-- Native Explorer copy/paste workflow
-
-The current implementation uses copy semantics and does not synchronize MOVE-only clipboard operations.
-
----
-
-### Text Clipboard Synchronization
-
-Text copied on one computer can automatically become available on the other computer.
-
-This includes normal Windows clipboard text operations such as:
-
-```text
-Ctrl+C
-Ctrl+V
-```
-
-Loop prevention is included to avoid repeatedly retransmitting clipboard content between both systems.
-
----
-
-### Image Clipboard Synchronization
-
-OTI-Link also supports image clipboard synchronization between the two computers.
-
-Images copied on one side can be pasted on the other side using the normal Windows clipboard workflow.
-
----
-
-### Keyboard and Mouse Sharing
-
-OTI-Link includes keyboard and mouse sharing between the two computers.
-
-The current KVM implementation includes:
-
-- Keyboard forwarding
-- Mouse forwarding
-- Raw Input mouse handling
-- Relative mouse movement
-- Hotkey switching
-- Remote input reset
-- Mouse configuration synchronization
-
-Default switching hotkey:
-
-```text
-Ctrl + Alt + F12
-```
-
----
-
-### Background Tray Application
-
-OTI-Link runs as a Windows GUI subsystem application without a console window.
-
-The tray menu provides:
-
-- Open log
-- Open log folder
-- Exit OTI-Link
-
-Double-clicking the tray icon opens the log.
-
-Only one OTI-Link instance is allowed per Windows session through a global single-instance mutex.
-
----
-
-### Reconnect Handling
-
-OTI-Link does not immediately terminate the current session when the cable temporarily disappears.
-
-Instead, it enters a waiting state:
-
-```text
-USB_WAIT_DEVICE
-```
-
-When Windows enumerates the cable again:
-
-```text
-USB_DEVICE_FOUND
-USB_MI05_CLAIMED
-```
-
-OTI-Link automatically rebuilds the peer session and remounts the remote filesystem.
-
----
-
-### Shutdown / Restart Coordination
-
-OTI-Link includes an experimental peer shutdown coordination mechanism.
-
-When Windows begins a shutdown or restart sequence, OTI-Link attempts to notify the peer before the local USB session disappears.
-
-This allows both applications to release the active session earlier instead of waiting only for a transport timeout.
-
-This mechanism improves session cleanup but does not guarantee recovery from hardware-level USB enumeration failures.
-
----
-
-## Supported Hardware
-
-The current implementation has been developed and tested with an OTi USB transfer cable using:
+Typical hardware:
 
 ```text
 VID: 0EA0
 PID: 7301
-```
-
-Typical USB composite interfaces include:
-
-```text
-MI_00  RNDIS
-MI_02  USB Mass Storage
-MI_03  HID
-MI_04  HID
-MI_05  Oti U3 Transfer Cable / WinUSB
-```
-
-OTI-Link communicates primarily with:
-
-```text
-MI_05
 ```
 
 Typical MI_05 endpoints:
@@ -220,60 +46,373 @@ Current lane usage:
 ```text
 Lane 0
 OUT 0x08 → remote IN 0x89
-Primary filesystem / bulk data traffic
+High-throughput data: file data and virtual-network traffic
 
 Lane 1
 OUT 0x0A → remote IN 0x8B
-Control, metadata, clipboard, KVM, and session traffic
+Low-latency control: session, RPC, clipboard, KVM,
+network state, and FIX15 workflow messages
 ```
 
-Other cable revisions may use different interfaces or endpoint layouts and may require code changes.
+Since FIX13, Lane 0 frames include the current session and a header CRC, while Lane 1 filesystem RPC is also bound to the authenticated peer session. Unrecoverable Lane 0 read/write failures terminate the whole USB session and trigger reconnect, preventing a half-connected state where Lane 1 is alive but the data path is dead.
+
+### Remote Filesystem / WinFsp
+
+The peer computer is exposed as a Windows filesystem, for example:
+
+```text
+OTI-DESKTOP-XXXX (R:)
+├── Desktop
+├── Downloads
+├── Documents
+└── Drives
+    ├── C
+    ├── D
+    └── ...
+```
+
+Supported operations include:
+
+- File reading, creation, writing, overwrite, and deletion
+- Directory creation and deletion
+- Rename and move
+- File-size and basic metadata updates
+- Directory enumeration
+- Large sequential reads
+- Adaptive read-ahead caching
+- Fast failure of pending requests when the USB session is lost
+
+Only local fixed drives are exported by default.
+
+### Windows Explorer Copy / Paste
+
+OTI-Link synchronizes the Windows file clipboard while actual file data is read through the WinFsp mount and transferred over Lane 0.
+
+Typical flow:
+
+```text
+Explorer on PC A: Copy
+        ↓
+OTI-Link synchronizes the file list
+        ↓
+PC B receives CF_HDROP
+        ↓
+Explorer on PC B: Paste
+        ↓
+Windows reads the remote mounted path
+        ↓
+WinFsp → OTI-Link → USB Lane 0
+```
+
+Multiple files, multiple folders, and recursive directory copy are supported.
+
+**The current implementation uses COPY semantics. The experimental cross-screen OLE drag-and-drop feature from FIX10 was removed in FIX11. Use normal copy/paste for cross-PC file transfer.**
+
+### Clipboard Synchronization
+
+Clipboard synchronization can be controlled independently for:
+
+- Text
+- Images
+- Files
+
+The clipboard path uses change detection, stabilization delay, and loop prevention to avoid ping-pong updates between both PCs.
+
+In Moonlight display mode, all three clipboard paths are gated off by the workflow state machine. Returning to OTI mode restores each user's original clipboard settings.
+
+### Keyboard / Mouse Sharing and Cross-Screen KVM
+
+Supported capabilities include:
+
+- Keyboard forwarding
+- Raw Input mouse handling
+- Relative mouse movement
+- Mouse buttons and wheel
+- KVM hotkey switching
+- Bidirectional mouse cross-screen switching
+- Direction, offset, and screen-layout configuration
+- Session/disconnect input reset
+- High-frequency mouse-motion coalescing to avoid flooding Lane 1
+
+Default KVM hotkey:
+
+```text
+Ctrl + Alt + F12
+```
+
+Normal cross-screen switching preserves KeyDown/KeyUp routing. On disconnect or recovery, only input that was actually injected remotely is released.
+
+> Windows `SendInput` is subject to UIPI and secure-desktop restrictions. A normally privileged OTI-Link process cannot reliably inject input into higher-integrity windows or the Ctrl+Alt+Del secure desktop.
+
+### Virtual Network Adapter / Wintun
+
+When enabled, OTI-Link creates a private virtual Ethernet-like link between the two computers.
+
+Typical uses:
+
+- `ping`
+- SMB
+- Remote Desktop
+- LAN-style games
+- iperf
+- Other normal TCP/UDP applications
+
+Setup:
+
+1. Download Wintun.
+2. Copy the amd64 `wintun.dll` next to `oti_link_v10.exe`.
+3. Enable the virtual adapter in OTI-Link settings on both PCs.
+4. UAC is used only by the elevated network helper. The main OTI-Link process should not normally run elevated, otherwise the WinFsp mount may appear only in the elevated session and not in normal Explorer.
+
+Default network:
+
+```text
+OTI-Link
+10.77.77.0/24
+```
+
+The two endpoint addresses are derived from each installation ID and remain stable as `.1` and `.2`.
+
+Virtual-network traffic runs over Lane 0 and is interleaved with file traffic.
+
+### WinNAT Internet Sharing
+
+A typical configuration is:
+
+```text
+PC A (has Internet): Share this PC's network with the peer
+PC B: Use peer for Internet access
+```
+
+The provider uses Windows WinNAT rather than ICS.
+
+Since FIX13, configuration is transactional:
+
+- The provider publishes `provider_ready` only after its local WinNAT setup succeeds.
+- The client installs the OTI-Link default route only after receiving `provider_ready`.
+- Every configuration has a generation number, so stale results cannot overwrite newer state.
+- Provider/client failure paths remove intermediate NAT, forwarding, route, and DNS state.
+- The target OTI-Link `/24` is checked for overlap with existing IPv4 addresses/routes before configuration.
+
+Default DNS:
+
+```text
+223.5.5.5
+119.29.29.29
+```
+
+It can be overridden with `net_share_dns=` in the settings file.
+
+On some Windows client configurations, an existing `NetNat` created by Docker, Hyper-V, or another product may conflict with the OTI-Link NAT.
+
+---
+
+# FIX15: Moonlight Display Mode / OTI Mode
+
+## Intended Setup
+
+PC A:
+
+- Main computer
+- Runs Sunshine
+- Has Virtual Display Driver (VDD) installed
+- Runs OTI-Link with **"This PC is A"** enabled
+
+PC B:
+
+- Laptop / secondary-display machine
+- Runs Moonlight
+- Runs OTI-Link
+- Does **not** enable "This PC is A"
+
+FIX15 reduces the workflow to two mutually exclusive target states.
+
+| Component | Moonlight Display Mode | OTI Mode |
+|---|---|---|
+| A: VDD device | Enabled | Kept enabled; no repeated PnP rebuild |
+| A: Windows display topology | Physical display + VDD extended display | VDD display path disabled; normal physical displays remain |
+| B: Moonlight | Streaming | Exited |
+| A/B: OTI KVM + cross-screen | Disabled | Restored according to user settings |
+| A/B: text/image/file clipboard | Disabled | Restored according to user settings |
+
+## Hotkeys
+
+Mode toggle:
+
+```text
+Ctrl + Alt + F11
+```
+
+Moonlight client shortcut for ending the current stream:
+
+```text
+Ctrl + Alt + Shift + Q
+```
+
+In normal operation, the user does not need to press the Moonlight shortcut manually on PC B. When PC A switches back to OTI mode, OTI-Link sends a Lane 1 workflow command to B, and B injects the shortcut locally.
+
+## Starting VDD
+
+The VDD instance ID verified on the current development machine is:
+
+```text
+ROOT\DISPLAY\0001
+```
+
+After Windows reboot, if the VDD device is disabled, OTI-Link's **Start Virtual Display** button requests UAC and performs the equivalent of:
+
+```powershell
+pnputil /enable-device "ROOT\DISPLAY\0001"
+```
+
+The instance ID is machine-specific and should be changed in settings when used on another PC.
+
+The Start Virtual Display button only ensures that the VDD device is available. It does not by itself enter Moonlight display mode.
+
+## Entering Moonlight Display Mode
+
+PC A state flow:
+
+```text
+User selects Moonlight mode
+        ↓
+Immediately gate OTI KVM / cross-screen / clipboard
+        ↓
+Verify PC B is online
+        ↓
+Verify VDD is enabled
+        ↓
+If needed: UAC + pnputil
+        ↓
+SetDisplayConfig: enable extended display topology
+        ↓
+QueryDisplayConfig: verify VDD path is active
+        ↓
+Lane 1: tell B to start Moonlight
+        ↓
+Wait for matching-generation ACK
+        ↓
+Stable(Moonlight)
+```
+
+Default Moonlight command on PC B:
+
+```text
+"%ProgramFiles%\Moonlight Game Streaming\Moonlight.exe" stream "{peer}" "Desktop"
+```
+
+`{peer}` is replaced with PC A's Windows computer name. If B cannot resolve that name, configure a fixed IP address or hostname instead.
+
+Entering Moonlight mode requires PC B to be online. If any step fails, the state machine rolls back toward OTI mode so that Moonlight and OTI KVM are not left active at the same time.
+
+## Returning to OTI Mode
+
+```text
+A tells B: enter OTI mode
+        ↓
+B brings the Moonlight window to the foreground
+        ↓
+B injects Ctrl+Alt+Shift+Q
+        ↓
+Wait for Moonlight to exit
+        ↓
+If a Moonlight process started by OTI is still alive after timeout,
+terminate that owned process
+        ↓
+B sends ACK
+        ↓
+A disables the VDD display path
+        ↓
+Verify the virtual display is no longer part of the active desktop
+        ↓
+Restore OTI KVM / cross-screen / clipboard
+        ↓
+Stable(OTI)
+```
+
+FIX15 prefers disabling only the VDD display path rather than blindly calling `DisplaySwitch /internal`, so unrelated physical monitors are not unnecessarily disabled. A broader topology fallback may be used only when needed.
+
+## Unexpected Moonlight Exit
+
+PC B periodically checks the Moonlight process.
+
+Moonlight may end because:
+
+- The user exits it manually on B
+- The network drops
+- Sunshine ends the session
+- Moonlight exits or crashes
+
+B then performs:
+
+```text
+Restore local OTI gate
+        ↓
+CTRL_WORKFLOW_EVENT → A
+        ↓
+A desired = OTI
+        ↓
+A disables the VDD display path
+        ↓
+The mouse can no longer disappear into an invisible virtual display
+        ↓
+Restore OTI KVM / file / clipboard behavior
+```
+
+## FIX15 State-Machine Principles
+
+- **Desired state + reconcile**: buttons and hotkeys change only `desired`; a worker reconciles reality toward that state.
+- **Single writer**: A's worker owns A-side VDD/display changes; B's worker owns Moonlight process control.
+- **Fail closed**: whenever the system is not stably in OTI mode, KVM/cross-screen/clipboard remain gated.
+- **A is authoritative, B follows**: A can always return locally to OTI mode even if USB is disconnected; B is synchronized later.
+- **Reconnect never auto-starts Moonlight**: reconnect performs validation only. A new Moonlight stream requires explicit user action.
+- **Reality wins**: if A starts and discovers an active VDD display path, it initially treats that as a Moonlight-like state and validates B. If B is not streaming, A converges back to OTI.
+- **Generation protects against stale messages**: late or duplicated ACKs cannot overwrite the current transition.
+- **Rapid repeated hotkeys are safe**: transitions are debounced and each step checks the latest desired state.
+
+## FIX15 Workflow Protocol
+
+Current protocol version:
+
+```text
+PROTOCOL_VERSION = 14
+```
+
+Workflow messages:
+
+| Kind | Direction | Meaning |
+|---|---|---|
+| `74 CTRL_WORKFLOW_MODE` | A → B | Request Moonlight or OTI mode |
+| `75 CTRL_WORKFLOW_ACK` | B → A | Result and Moonlight-running state |
+| `76 CTRL_WORKFLOW_EVENT` | B → A | Asynchronous event such as Moonlight ending |
+
+Both PCs must run the same protocol version.
 
 ---
 
 ## Requirements
 
-### Operating System
+### Windows
 
-Windows 10 or Windows 11 is recommended.
+Recommended:
 
----
+```text
+Windows 10 / Windows 11
+```
 
 ### WinFsp
 
-WinFsp is required for remote filesystem mounting.
+WinFsp is required for the remote filesystem.
 
-Default installation path used during development:
+Typical development installation path:
 
 ```text
 C:\Program Files (x86)\WinFsp\
 ```
 
-Download WinFsp from its official project website.
-
----
-
-### LLVM / libclang
-
-Rust bindings used by the project require libclang.
-
-Typical installation:
-
-```text
-C:\Program Files\LLVM\
-```
-
-Before building:
-
-```powershell
-$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-```
-
----
-
 ### Rust
 
-Install the current stable Rust toolchain using rustup.
+Install stable Rust through rustup.
 
 Verify:
 
@@ -282,25 +421,69 @@ rustc --version
 cargo --version
 ```
 
+### LLVM / libclang
+
+The Rust bindings used by the project require libclang.
+
+Typical install path:
+
+```text
+C:\Program Files\LLVM\
+```
+
+PowerShell:
+
+```powershell
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+```
+
+CMD:
+
+```cmd
+set "LIBCLANG_PATH=C:\Program Files\LLVM\bin"
+```
+
+### Wintun
+
+Required only when using the OTI-Link virtual network adapter.
+
+Place:
+
+```text
+wintun.dll
+```
+
+in the same directory as:
+
+```text
+oti_link_v10.exe
+```
+
+### Sunshine / Moonlight / VDD
+
+Required only for FIX15 Moonlight display mode:
+
+```text
+PC A: Sunshine + Virtual Display Driver
+PC B: Moonlight
+```
+
+Normal OTI mode does not require Moonlight or VDD.
+
 ---
 
 ## USB Driver
 
-The OTi transfer interface should use the Microsoft WinUSB driver.
+The OTi MI_05 transfer interface should use Microsoft's WinUSB driver.
 
-Expected device:
+Expected device/interface:
 
 ```text
 Oti U3 Transfer Cable
-```
-
-Expected interface:
-
-```text
 USB\VID_0EA0&PID_7301&MI_05
 ```
 
-You can inspect the device with:
+Check with:
 
 ```powershell
 Get-PnpDevice -PresentOnly |
@@ -310,77 +493,79 @@ Where-Object {
 Format-Table Status,Class,FriendlyName,InstanceId -AutoSize
 ```
 
-The RNDIS interface is not required by OTI-Link.
+The RNDIS interface is not the main OTI-Link transport dependency.
 
 ---
 
 ## Building
 
-Clone the repository:
+Repository:
 
-```powershell
-git clone https://github.com/YOUR_USERNAME/OTI-Link.git
-cd OTI-Link
+```text
+https://github.com/haungdzh6/OTI_LINK.git
 ```
 
-Set the LLVM path:
+PowerShell:
 
 ```powershell
+git clone https://github.com/haungdzh6/OTI_LINK.git
+cd OTI_LINK
+
 $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-```
-
-Build the release version:
-
-```powershell
 cargo build --release --bin oti_link_v10
 ```
 
-The executable will be created at:
+CMD:
+
+```cmd
+git clone https://github.com/haungdzh6/OTI_LINK.git
+cd OTI_LINK
+
+set "LIBCLANG_PATH=C:\Program Files\LLVM\bin"
+cargo build --release --bin oti_link_v10
+```
+
+Output:
 
 ```text
 target\release\oti_link_v10.exe
 ```
 
----
+If CMD says:
 
-## Build Dependencies
-
-Example Cargo dependencies used by the project:
-
-```toml
-[dependencies]
-nusb = "0.2.7"
-crc32fast = "1"
-ctrlc = "3"
-arboard = "3.6.1"
-filetime = "0.2"
-notify = "8.2"
-winfsp = { version = "0.13.1", features = ["windows-61"] }
-winfsp-sys = "0.12.1"
-
-[build-dependencies]
-winfsp = "0.13.1"
+```text
+'cargo' is not recognized as an internal or external command
 ```
 
-The project intentionally does not use the WinFsp `system` feature.
+but `%USERPROFILE%\.cargo\bin\cargo.exe` exists, try:
+
+```cmd
+set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+set "PATHEXT=.COM;.EXE;.BAT;.CMD"
+cargo --version
+```
+
+Or bypass PATH entirely:
+
+```cmd
+"%USERPROFILE%\.cargo\bin\cargo.exe" build --release --bin oti_link_v10
+```
 
 ---
 
 ## Running
 
-Build the same version of OTI-Link for both computers.
+Run the same build on both computers.
 
-Copy the same executable to both systems:
+Before starting OTI-Link, close the original Smart Data Link software.
+
+Launch:
 
 ```text
 oti_link_v10.exe
 ```
 
-Make sure the original Smart Data Link application is closed before starting OTI-Link.
-
-Run OTI-Link on both computers.
-
-When the connection succeeds, the log should contain messages similar to:
+A normal connection should produce log entries similar to:
 
 ```text
 USB_DEVICE_FOUND
@@ -390,15 +575,85 @@ PEER_READY
 MOUNTED R:
 ```
 
-The peer filesystem should then appear as a mounted drive in Windows Explorer.
+The peer filesystem should then appear in Explorer.
+
+---
+
+## Recommended Setup Order
+
+### Normal OTI Mode
+
+Validate in this order:
+
+1. USB connection
+2. Remote filesystem mount
+3. Small-file Explorer copy/paste
+4. Text/image clipboard
+5. KVM hotkey
+6. Mouse cross-screen
+7. Virtual network adapter, if needed
+8. WinNAT sharing, if needed
+
+### Moonlight Display Mode
+
+Recommended preparation:
+
+1. Install and configure Sunshine on PC A.
+2. Install VDD on A and determine the VDD device instance ID.
+3. Install Moonlight on B and manually verify that B can stream A's `Desktop`.
+4. Run the same FIX15 build on A and B.
+5. On A, enable **This PC is A**.
+6. On B, configure the Moonlight launch command if necessary.
+7. On A, use **Start Virtual Display** and verify that VDD can be enabled successfully.
+8. Use `Ctrl+Alt+F11` or the settings UI to enter Moonlight display mode.
+9. Use the same hotkey again to return to OTI mode.
+
+---
+
+## Virtual Network Verification
+
+Inspect the adapter:
+
+```powershell
+Get-NetIPAddress -InterfaceAlias OTI-Link
+Get-NetConnectionProfile -InterfaceAlias OTI-Link
+```
+
+Ping:
+
+```powershell
+ping 10.77.77.2
+```
+
+Inspect provider NAT:
+
+```powershell
+Get-NetNat
+```
+
+Inspect client default route:
+
+```powershell
+route print 0.0.0.0
+```
+
+iperf example:
+
+```text
+Peer:
+iperf3 -s
+
+Local:
+iperf3 -c 10.77.77.2 -t 20 -P 4
+```
 
 ---
 
 ## Logs
 
-OTI-Link writes runtime diagnostic logs that can be opened directly from the tray menu.
+The tray menu can open the log file and log directory.
 
-Useful messages include:
+Common log keywords:
 
 ```text
 USB_WAIT_DEVICE
@@ -406,118 +661,48 @@ USB_DEVICE_FOUND
 USB_MI05_CLAIMED
 PEER_HELLO
 PEER_READY
-MOUNTED
 SESSION_END
 RECONNECT_BACKOFF_MS
+
+MOUNTED
+CLIP_TEXT_TX
+CLIP_TEXT_RX
+CLIP_IMAGE_TX
+CLIP_IMAGE_RX
+
+NET_STATUS
+NET_HELPER_READY
+NET_LINK_UP
+NET_LINK_DOWN
+
+KVM_READY
 ```
 
-Clipboard and KVM activity also have dedicated diagnostic messages.
+For FIX15 mode switching, also inspect workflow, VDD, Moonlight, display-topology, ACK, and transition-related log entries.
 
 ---
 
-## File Transfer Architecture
+## Tests
 
-OTI-Link does not pre-copy remote files to temporary storage before Explorer paste operations.
+File clipboard tests:
 
-Instead:
-
-```text
-PC A
-Explorer Copy
-    ↓
-Clipboard file path synchronization
-    ↓
-PC B receives CF_HDROP
-    ↓
-Explorer Paste
-    ↓
-Windows reads the remote mounted path
-    ↓
-WinFsp
-    ↓
-OTI-Link
-    ↓
-USB bulk transfer
+```powershell
+cargo test --release --bin oti_link_v10 clipboard_file_tests
 ```
 
-This keeps Explorer behavior close to normal Windows file copy operations.
+Directory enumeration tests:
 
----
-
-## Protocol Overview
-
-The current protocol uses separate control and data framing.
-
-Control frame magic:
-
-```text
-OC10
+```powershell
+cargo test --release --bin oti_link_v10 directory_tests
 ```
-
-Data frame magic:
-
-```text
-OD10
-```
-
-Examples of control message types include:
-
-```text
-HELLO
-MANIFEST
-READY
-HEARTBEAT
-CHANGE
-
-STAT
-LIST
-READ
-CREATE
-WRITE
-FLUSH
-RENAME
-DELETE
-SET_SIZE
-SET_BASIC
-
-CLIP_TEXT
-CLIP_IMAGE
-CLIP_FILES
-
-KVM_KEY
-KVM_MOUSE
-KVM_RESET
-KVM_STATE
-
-SESSION_ENDING
-SESSION_END_ACK
-```
-
-Large file reads and writes use dedicated data frames with CRC32 validation.
-
----
-
-## Performance
-
-During development, the primary bulk lane has demonstrated transfer performance above 300 MiB/s under favorable conditions.
-
-Observed throughput depends on:
-
-- USB controller
-- Cable revision
-- Storage speed
-- Filesystem workload
-- File size
-- Host CPU
-- WinFsp overhead
-
-These measurements should not be interpreted as a guaranteed hardware maximum.
 
 ---
 
 ## USB Reconnect Limitation
 
-Some OTi transfer cable revisions can enter a hardware or firmware state where Windows reports:
+Some OTi cable revisions can enter a bad bridge/firmware state when one PC reboots while the other still powers the cable.
+
+Symptoms may include:
 
 ```text
 Unknown USB Device
@@ -530,9 +715,7 @@ or:
 USB\VID_0000&PID_0004
 ```
 
-This can occur after one connected PC is rebooted while the bridge remains powered from the other PC.
-
-Testing has shown that standard Windows recovery operations may not always restore the device, including:
+Software-only recovery attempts such as:
 
 ```text
 USB hub port cycle
@@ -541,30 +724,19 @@ PnP rescan
 xHCI controller restart
 ```
 
-A complete electrical power removal from the cable may be required for the affected hardware revision.
+may not recover the device.
 
-The original Smart Data Link software has also been observed to fail to detect the cable in this condition.
+Some hardware revisions require physically disconnecting all cable interfaces so the bridge fully loses power, then reconnecting it.
 
-This appears to be a hardware/firmware limitation rather than an OTI-Link filesystem or protocol failure.
+This is a bridge/firmware-level failure. OTI-Link session reconnect cannot repair a USB device that no longer enumerates correctly.
 
 ---
 
 ## Three-Connector Cable Notes
 
-Some OTi cables contain three physical connectors, for example:
+Some OTi cables expose both Type-A and Type-C on one side.
 
-```text
-Side A:
-USB Type-A
-USB Type-C
-
-Side B:
-USB Type-A
-```
-
-Testing indicates that the Type-A and Type-C connectors on the same side can both function as host connection options.
-
-For normal use, use only one connector on that side:
+Normally, use only one connector from that side:
 
 ```text
 Type-C ↔ Type-A
@@ -576,204 +748,102 @@ or:
 Type-A ↔ Type-A
 ```
 
-Do not assume that the Type-A and Type-C connectors on the same side are intended to be connected simultaneously.
-
----
-
-## Recommended Usage
-
-For the most reliable operation:
-
-```text
-1. Use only one connector on the Type-A / Type-C selectable side.
-2. Connect directly to USB 3.x ports when possible.
-3. Avoid unpowered USB hubs.
-4. Close the original Smart Data Link software before starting OTI-Link.
-5. Run the same OTI-Link version on both computers.
-6. Allow Windows to finish USB enumeration before starting large transfers.
-```
-
-If a cable enters the `VID_0000&PID_0004` state, physically disconnecting all cable connectors long enough to fully remove power may be required before reconnecting.
-
----
-
-## Tests
-
-Run clipboard file tests:
-
-```powershell
-cargo test --release --bin oti_link_v10 clipboard_file_tests
-```
-
-Run directory enumeration tests:
-
-```powershell
-cargo test --release --bin oti_link_v10 directory_tests
-```
-
----
-
-## Project Goals
-
-OTI-Link aims to provide:
-
-- Direct access to OTi USB transfer hardware
-- No dependency on the original proprietary application
-- Native Windows Explorer integration
-- High-throughput remote file access
-- Transparent clipboard sharing
-- Keyboard and mouse sharing
-- Recoverable background operation
-- Clear and inspectable protocol implementation
-- Fully open-source development
-
----
-
-## Project Status
-
-OTI-Link is an experimental reverse-engineered project.
-
-Core functionality is operational, including:
-
-```text
-USB communication
-Remote filesystem
-Writable files
-Directory operations
-Read caching
-Explorer file clipboard
-Text clipboard
-Image clipboard
-KVM
-Tray mode
-Reconnect waiting
-Shutdown coordination
-```
-
-However, the project should still be considered development software.
-
-Back up important data before testing writable remote filesystem functionality.
+Do not assume the Type-A and Type-C connectors on the same side are intended to be connected to two hosts simultaneously.
 
 ---
 
 ## Known Limitations
 
-- Some OTi cable revisions may require full electrical power removal after a peer reboot.
-- RNDIS functionality is not used.
-- MOVE-only Explorer clipboard operations are not synchronized.
-- Other OTi VID/PID revisions are not automatically supported.
-- USB endpoint layouts may differ between hardware revisions.
-- WinFsp is required.
-- Windows is currently the primary supported operating system.
-- Shutdown coordination cannot fix a bridge controller that is already electrically locked.
-- Sudden power loss cannot be coordinated in software.
+- Windows is the primary supported platform.
+- WinFsp is required for the remote filesystem.
+- Wintun is required only for the virtual-network mode.
+- Explorer MOVE-only clipboard operations are not synchronized as a cross-PC move; use copy/paste.
+- The experimental FIX10 OLE cross-screen file drag feature was removed.
+- Some OTi bridge failures require a full physical power cycle.
+- Different OTi VID/PID or endpoint layouts may require source-code changes.
+- Windows UIPI / secure desktop limits KVM input injection.
+- WinNAT may conflict with an existing `NetNat`.
+- Moonlight display mode depends on Sunshine, Moonlight, VDD, and Windows display configuration all working correctly.
+- VDD instance IDs are machine-specific. `ROOT\DISPLAY\0001` is only the verified example for the current development PC.
+- The current branch does not include OTI-Link's old DXGI display-streaming implementation; video is provided by Sunshine/Moonlight.
 
 ---
 
 ## Security Notes
 
-OTI-Link gives one computer access to files exported by another computer.
+OTI-Link allows one computer to access exported files on the other computer and can forward keyboard, mouse, clipboard, and virtual-network traffic.
 
-Only run OTI-Link between computers you trust.
+Use it only between computers you trust.
 
-The current protocol is intended for a directly connected USB cable and should not be treated as an authenticated or encrypted network protocol.
+The protocol is designed for a direct USB cable and should not be treated as an authenticated, encrypted protocol for untrusted networks.
 
-Do not expose the protocol transport to untrusted systems.
+Back up important data before testing writable remote-filesystem features.
 
 ---
 
-## Disclaimer
+## Version History
 
-This software is provided for research, interoperability, and personal development purposes.
+| Version | Main changes |
+|---|---|
+| FIX8 | Settings UI, configurable KVM hotkey, clipboard controls, clipboard contention fixes, KVM key-release fixes, disconnect handling, read-ahead/log improvements |
+| FIX9 | Added Wintun virtual NIC and the private `10.77.77.0/24` OTI-Link network; network data moved over Lane 0 |
+| FIX10 | Added bidirectional mouse cross-screen KVM and physical-display/layout mapping; experimental OLE cross-screen drag-and-drop was attempted |
+| FIX11 | Removed the unsuccessful OLE drag-and-drop feature; added WinNAT Internet sharing; introduced the old OTI DXGI secondary-display implementation |
+| FIX12 | Hardened display session/input/frame handling and thread lifecycle; fixed WinNAT configuration races |
+| FIX13 | Added Lane0/Lane1 session isolation, Lane0 header CRC, USB transport-fatal reconnect, KVM mouse-flow control, and transactional WinNAT provider-ready/generation handling |
+| FIX13 compilefix2 | Improved VDD/MTT1337 monitor enumeration, GDI→DXGI mapping, and diagnostics |
+| FIX13 compilefix3 | Rust 2024 / Win32 FFI `unsafe` and ABI cleanup without functional changes |
+| FIX13 no-display | Removed `display.rs` and OTI's built-in display streaming while keeping files, clipboard, KVM, cross-screen, virtual NIC, and WinNAT |
+| FIX14 | Added Moonlight + VDD workflow control on top of the no-display branch |
+| **FIX15** | Reworked workflow into a convergent, re-entrant, self-healing state machine; manages VDD display path, Moonlight lifecycle, reconnect behavior, and OTI gates; **current version, protocol 14** |
 
-Use it at your own risk.
+Historical references to OTI-Link's built-in secondary-display streaming describe older development stages only. The current FIX15 no-display line does not use that implementation.
 
-The authors are not responsible for:
+---
 
-- Data loss
-- File corruption
-- Device malfunction
-- USB controller instability
-- Driver problems
-- Hardware damage
-- Compatibility issues
+## Project Status
 
-Always keep backups of important files before testing experimental filesystem software.
+OTI-Link remains experimental and reverse-engineering-oriented software.
+
+Current focus areas include:
+
+```text
+USB communication
+WinFsp remote filesystem
+Explorer file copy/paste
+Text/image/file clipboard
+KVM
+Mouse cross-screen
+Virtual networking
+WinNAT Internet sharing
+Moonlight/VDD display workflow
+USB automatic reconnect
+```
+
+Keep backups when testing with important data.
 
 ---
 
 ## License
 
-Choose an open-source license before publishing the repository.
+Before publishing the repository as a formal open-source project, choose and add an explicit license such as MIT, Apache-2.0, or GPL-3.0.
 
-Common options include:
-
-```text
-MIT
-Apache-2.0
-GPL-3.0
-```
-
-For a permissive project, MIT or Apache-2.0 are common choices.
-
----
-
-## Contributing
-
-Contributions are welcome.
-
-Useful contribution areas include:
-
-- Support for additional OTi cable revisions
-- USB protocol analysis
-- Improved reconnect handling
-- Performance optimization
-- WinFsp filesystem improvements
-- Clipboard interoperability
-- KVM improvements
-- Documentation
-- Automated testing
-
-When reporting hardware-related issues, please include:
-
-```text
-Windows version
-Cable VID/PID
-USB interface list
-MI_05 endpoint layout
-OTI-Link version
-Relevant log output
-```
+This README does not automatically assign a license.
 
 ---
 
 ## Acknowledgements
 
-OTI-Link uses and builds upon open-source projects including:
+OTI-Link uses or integrates with open-source projects/components including:
 
 - Rust
 - nusb
 - WinFsp
+- Wintun
 - arboard
 - crc32fast
+- Sunshine
+- Moonlight
+- Virtual Display Driver
 
 Thanks to the developers and maintainers of these projects.
-
----
-
-## Name
-
-**OTI-Link**
-
-Open-source Windows software for OTi USB 3.x PC-to-PC transfer cables.
-
-## FIX15 Moonlight 副屏模式 / OTI 模式
-
-A 电脑（运行 Sunshine + Virtual Display Driver）在设置里勾选“本机是 A 电脑”，之后用 **Ctrl+Alt+F11**（或设置窗口 / 托盘菜单）在两种模式间切换；B 电脑只需填好 Moonlight 启动命令，不要勾选。
-
-- **Moonlight 副屏模式**：A 确保 VDD 已启用（禁用时弹 UAC 执行 `pnputil /enable-device "<实例ID>"`）→ 扩展显示（显示器 1 + VDD）→ B 启动 `Moonlight.exe stream …`；两端 OTI KVM、跨屏、文本/图片/文件剪贴板关闭。
-- **OTI 模式**：B 用 `Ctrl+Alt+Shift+Q` 退出串流（5 秒未退出则结束 OTI 启动的进程）→ A 停用 VDD 显示路径（仅显示器 1，鼠标不会再跑进虚拟屏）→ 两端 OTI 功能按用户设置恢复。
-- B 上的 Moonlight 因任何原因结束时，两端自动切回 OTI 模式。
-- “启动虚拟显示器”按钮只执行 UAC + pnputil，不改显示拓扑。
-
-两端必须同时升级（协议版本 14）。状态机、失败处理与协议见 `FIX15_Moonlight_OTI_状态机设计.md`。
